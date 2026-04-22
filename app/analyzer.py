@@ -534,6 +534,110 @@ def generate_llm_insights(
     return completion.choices[0].message.content.strip()
 
 
+# ── Chart-level plain-English explanations ────────────────────────────────────
+
+def generate_chart_explanations(summary: Dict, api_key: Optional[str]) -> Optional[List[Dict]]:
+    """
+    Returns a list of dicts: [{title, explanation}, …]
+    One entry per chart panel that appears in the dashboard.
+    Uses the same Groq key as the narrative; returns None if no key.
+    """
+    if not api_key:
+        return None
+
+    continuous = summary.get("continuous_columns", [])
+    discrete   = summary.get("discrete_columns", [])
+    cat_cols   = summary.get("categorical_columns", [])
+    missing_df = summary.get("missing", pd.DataFrame())
+    num_summary = summary.get("numeric_summary", pd.DataFrame())
+    top_cats   = summary.get("top_categories", [])
+
+    # Build a compact stats payload for each chart panel
+    panels = []
+
+    # Histograms — up to first 2 continuous cols
+    for col in continuous[:2]:
+        stats_row = {}
+        if not num_summary.empty:
+            row = num_summary[num_summary["column"] == col]
+            if not row.empty:
+                stats_row = row.iloc[0].to_dict()
+        panels.append({
+            "chart": "histogram",
+            "column": col,
+            "stats": stats_row,
+        })
+
+    # Correlation heatmap
+    if len(continuous) >= 2:
+        panels.append({
+            "chart": "correlation_heatmap",
+            "columns": continuous,
+        })
+
+    # Bar chart — first bar candidate
+    bar_candidates = discrete + cat_cols
+    if bar_candidates:
+        col = bar_candidates[0]
+        top = next((t for t in top_cats if t["column"] == col), {})
+        panels.append({
+            "chart": "bar_chart",
+            "column": col,
+            "top_values": top.get("values", {}),
+        })
+
+    # Missing data
+    mv = missing_df[missing_df["missing"] > 0] if not missing_df.empty else pd.DataFrame()
+    if not mv.empty:
+        panels.append({
+            "chart": "missing_data",
+            "columns_with_missing": mv[["column", "percent"]].to_dict(orient="records"),
+        })
+
+    # Scatter plot
+    if len(continuous) >= 2:
+        color_col = cat_cols[0] if cat_cols else (discrete[0] if discrete else None)
+        panels.append({
+            "chart": "scatter_plot",
+            "x": continuous[0],
+            "y": continuous[1],
+            "color_by": color_col,
+        })
+
+    if not panels:
+        return None
+
+    client = Groq(api_key=api_key)
+    system = {
+        "role": "system",
+        "content": (
+            "You are a friendly data analyst explaining charts to a non-technical user. "
+            "For each chart panel given, write 2–3 plain-English sentences explaining:\n"
+            "  1. What the chart shows\n"
+            "  2. The most important pattern or finding\n"
+            "  3. What it might mean practically\n\n"
+            "Be specific — use actual column names and numbers. No bullet points. No markdown. "
+            "Respond ONLY with a JSON array, no preamble, no backticks:\n"
+            '[{"title": "Chart name", "explanation": "Plain English text."}, ...]'
+        ),
+    }
+    user_msg = {"role": "user", "content": json.dumps(panels, default=str)}
+
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[system, user_msg],
+            temperature=0.3,
+            max_tokens=900,
+        )
+        raw = completion.choices[0].message.content.strip()
+        # Strip any accidental markdown fences
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def analyze_dataset(file_bytes: bytes, filename: str, api_key: Optional[str]) -> Dict:
@@ -554,10 +658,12 @@ def analyze_dataset(file_bytes: bytes, filename: str, api_key: Optional[str]) ->
 
     sample_rows = df.head(5).to_dict(orient="records")
     insights = generate_llm_insights(summary, sample_rows, forecast_payload, api_key)
+    chart_explanations = generate_chart_explanations(summary, api_key)
 
     return {
         "summary": summary,
         "dashboard": dashboard_b64,
         "forecast": forecast_payload,
         "insights": insights,
+        "chart_explanations": chart_explanations,
     }

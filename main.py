@@ -6,7 +6,10 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from app.analyzer import analyze_dataset
+try:
+    from app.analyzer import analyze_dataset   # local: app/analyzer.py
+except ModuleNotFoundError:
+    from app.analyzer import analyze_dataset        # Streamlit Cloud: flat structure
 
 load_dotenv()
 
@@ -188,6 +191,40 @@ html, body, [class*="css"], .stApp {
     font-family: 'Inter', sans-serif;
 }
 
+/* ── Chart explanation cards ── */
+.explain-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-top: 2rem;
+}
+.explain-card {
+    background: #0f0f1a;
+    border: 1px solid #1c1c2e;
+    border-top: 3px solid #7c6fff;
+    border-radius: 12px;
+    padding: 1.2rem 1.4rem 1.1rem;
+    transition: border-color 0.2s, transform 0.15s;
+}
+.explain-card:hover {
+    border-color: #7c6fff;
+    transform: translateY(-2px);
+}
+.explain-card-title {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #7c6fff;
+    margin-bottom: 0.55rem;
+}
+.explain-card-body {
+    font-size: 0.84rem;
+    line-height: 1.75;
+    color: #b8b5d0;
+    font-family: 'Inter', sans-serif;
+}
+
 /* ── Dataframe ── */
 .stDataFrame iframe { border-radius: 10px !important; }
 [data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
@@ -306,6 +343,29 @@ with tab_dash:
         st.image(img, use_column_width=True)
     else:
         st.info("Dashboard could not be generated.")
+
+    # ── Chart explanations ─────────────────────────────────────────────────────
+    explanations = result.get("chart_explanations")
+    if explanations:
+        st.markdown('<div class="sec" style="margin-top:2.2rem;">What the charts are saying</div>',
+                    unsafe_allow_html=True)
+        cards_html = '<div class="explain-grid">'
+        for item in explanations:
+            title = item.get("title", "Chart")
+            body  = item.get("explanation", "")
+            cards_html += f"""
+            <div class="explain-card">
+                <div class="explain-card-title">{title}</div>
+                <div class="explain-card-body">{body}</div>
+            </div>"""
+        cards_html += "</div>"
+        st.markdown(cards_html, unsafe_allow_html=True)
+    elif not os.getenv("GROQ_API_KEY"):
+        st.markdown(
+            '<p style="color:#52506a;font-size:0.8rem;margin-top:1.5rem;">'
+            '💡 Add a <code>GROQ_API_KEY</code> to get plain-English explanations for each chart.</p>',
+            unsafe_allow_html=True,
+        )
 
 # ── Statistics ─────────────────────────────────────────────────────────────────
 with tab_stats:
